@@ -22,12 +22,20 @@ from metrics import *
 # pytorch-lightning
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning import LightningModule, Trainer
-from pytorch_lightning.logging import TestTubeLogger
+from pytorch_lightning import loggers
+
+# hw4 our dataset
+print(os.path.dirname(os.getcwd()))
+sys.path.append(os.path.dirname(os.getcwd()))
+from dataset import KlevrDataset
+
+torch.set_float32_matmul_precision('high')
 
 class NeRFSystem(LightningModule):
     def __init__(self, hparams):
         super(NeRFSystem, self).__init__()
-        self.hparams = hparams
+        # self.hparams = hparams
+        self.hparams.update(vars(hparams))
 
         self.loss = loss_dict[hparams.loss_type]()
 
@@ -35,11 +43,13 @@ class NeRFSystem(LightningModule):
         self.embedding_dir = Embedding(3, 4) # 4 is the default number
         self.embeddings = [self.embedding_xyz, self.embedding_dir]
 
-        self.nerf_coarse = NeRF()
+        self.nerf_coarse = NeRF(D=self.hparams.D, W=self.hparams.W)
         self.models = [self.nerf_coarse]
         if hparams.N_importance > 0:
-            self.nerf_fine = NeRF()
+            self.nerf_fine = NeRF(D=self.hparams.D, W=self.hparams.W)
             self.models += [self.nerf_fine]
+
+        self.validation_step_outputs = []
 
     def decode_batch(self, batch):
         rays = batch['rays'] # (B, 8)
@@ -61,7 +71,7 @@ class NeRFSystem(LightningModule):
                             self.hparams.noise_std,
                             self.hparams.N_importance,
                             self.hparams.chunk, # chunk size is effective in val mode
-                            self.train_dataset.white_back)
+                            False)
 
             for k, v in rendered_ray_chunks.items():
                 results[k] += [v]
@@ -71,14 +81,16 @@ class NeRFSystem(LightningModule):
         return results
 
     def prepare_data(self):
-        dataset = dataset_dict[self.hparams.dataset_name]
-        kwargs = {'root_dir': self.hparams.root_dir,
-                  'img_wh': tuple(self.hparams.img_wh)}
-        if self.hparams.dataset_name == 'llff':
-            kwargs['spheric_poses'] = self.hparams.spheric_poses
-            kwargs['val_num'] = self.hparams.num_gpus
-        self.train_dataset = dataset(split='train', **kwargs)
-        self.val_dataset = dataset(split='val', **kwargs)
+        # dataset = dataset_dict[self.hparams.dataset_name]
+        # kwargs = {'root_dir': self.hparams.root_dir,
+        #           'img_wh': tuple(self.hparams.img_wh)}
+        # if self.hparams.dataset_name == 'llff':
+        #     kwargs['spheric_poses'] = self.hparams.spheric_poses
+        #     kwargs['val_num'] = self.hparams.num_gpus
+        # self.train_dataset = dataset(split='train', **kwargs)
+        # self.val_dataset = dataset(split='val', **kwargs)
+        self.train_dataset = KlevrDataset(self.hparams.root_dir, split='train')
+        self.val_dataset = KlevrDataset(self.hparams.root_dir, split='val')
 
     def configure_optimizers(self):
         self.optimizer = get_optimizer(self.hparams, self.models)
@@ -135,12 +147,15 @@ class NeRFSystem(LightningModule):
                                                stack, self.global_step)
 
         log['val_psnr'] = psnr(results[f'rgb_{typ}'], rgbs)
+        self.validation_step_outputs.append(log)
         return log
 
-    def validation_epoch_end(self, outputs):
-        mean_loss = torch.stack([x['val_loss'] for x in outputs]).mean()
-        mean_psnr = torch.stack([x['val_psnr'] for x in outputs]).mean()
-
+    def on_validation_epoch_end(self):
+        mean_loss = torch.stack([x['val_loss'] for x in self.validation_step_outputs]).mean()
+        mean_psnr = torch.stack([x['val_psnr'] for x in self.validation_step_outputs]).mean()
+        self.validation_step_outputs.clear()
+        self.log('val/loss', mean_loss)
+        self.log('val/psnr', mean_psnr)
         return {'progress_bar': {'val_loss': mean_loss,
                                  'val_psnr': mean_psnr},
                 'log': {'val/loss': mean_loss,
@@ -150,31 +165,26 @@ class NeRFSystem(LightningModule):
 
 if __name__ == '__main__':
     hparams = get_opts()
+    print(vars(hparams))
     system = NeRFSystem(hparams)
-    checkpoint_callback = ModelCheckpoint(filepath=os.path.join(f'ckpts/{hparams.exp_name}',
-                                                                '{epoch:d}'),
+    checkpoint_callback = ModelCheckpoint(dirpath=os.path.join('ckpts', hparams.exp_name),
+                                          filename='epoch_{epoch:d}',
                                           monitor='val/loss',
                                           mode='min',
                                           save_top_k=5,)
 
-    logger = TestTubeLogger(
-        save_dir="logs",
+
+    logger = loggers.TensorBoardLogger(
+        save_dir=f'logs',
         name=hparams.exp_name,
-        debug=False,
-        create_git_tag=False
     )
 
     trainer = Trainer(max_epochs=hparams.num_epochs,
-                      checkpoint_callback=checkpoint_callback,
-                      resume_from_checkpoint=hparams.ckpt_path,
+                      callbacks=checkpoint_callback,
                       logger=logger,
-                      early_stop_callback=None,
-                      weights_summary=None,
-                      progress_bar_refresh_rate=1,
-                      gpus=hparams.num_gpus,
-                      distributed_backend='ddp' if hparams.num_gpus>1 else None,
+                      devices='auto',
                       num_sanity_val_steps=1,
                       benchmark=True,
-                      profiler=hparams.num_gpus==1)
+                      profiler='simple')
 
     trainer.fit(system)

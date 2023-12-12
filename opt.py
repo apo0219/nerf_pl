@@ -4,12 +4,12 @@ def get_opts():
     parser = argparse.ArgumentParser()
 
     parser.add_argument('--root_dir', type=str,
-                        default='/home/ubuntu/data/nerf_example_data/nerf_synthetic/lego',
+                        default='/home/apo/DLCV/dlcv-fall-2023-hw4-apo0219/dataset',
                         help='root directory of dataset')
-    parser.add_argument('--dataset_name', type=str, default='blender',
-                        choices=['blender', 'llff'],
-                        help='which dataset to train/val')
-    parser.add_argument('--img_wh', nargs="+", type=int, default=[800, 800],
+    # parser.add_argument('--dataset_name', type=str, default='blender',
+    #                     choices=['blender', 'llff'],
+    #                     help='which dataset to train/val')
+    parser.add_argument('--img_wh', nargs="+", type=int, default=[256, 256],
                         help='resolution (img_w, img_h) of the image')
     parser.add_argument('--spheric_poses', default=False, action="store_true",
                         help='whether images are taken in spheric poses (for llff)')
@@ -22,7 +22,7 @@ def get_opts():
                         help='use disparity depth sampling')
     parser.add_argument('--perturb', type=float, default=1.0,
                         help='factor to perturb depth sampling points')
-    parser.add_argument('--noise_std', type=float, default=1.0,
+    parser.add_argument('--noise_std', type=float, default=0.0,
                         help='std dev of noise added to regularize sigma')
         
     parser.add_argument('--loss_type', type=str, default='mse',
@@ -74,5 +74,7 @@ def get_opts():
 
     parser.add_argument('--exp_name', type=str, default='exp',
                         help='experiment name')
-
+    parser.add_argument('--D', type=int, default=8)
+    parser.add_argument('--W', type=int, default=256)
+    
     return parser.parse_args()
